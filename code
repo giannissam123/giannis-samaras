@@ -1,1 +1,118 @@
+#!/bin/bash
+
+# Αριθμός προϊόντων, πελατών και παραγγελιών ανά πελάτη
+TOTAL_PRODUCTS=20
+TOTAL_CUSTOMERS=5  
+ORDERS_PER_USER=10
+
+# Δήλωση καταλόγου (προσομοίωση με έναν συσχετιστικό πίνακα)
+declare -A product_catalog
+declare -A product_stats
+declare -A failed_orders
+declare -A user_totals
+
+# Αρχικοποίηση καταλόγου με περιγραφή προϊόντος, τιμή και απόθεμα
+for product_id in {0..19}; do
+  product_price=$((RANDOM % 20 + 1))  # Τυχαία τιμή μεταξύ 1 και 20
+  product_catalog[$product_id]="Item_$product_id $product_price 2"  # Μορφή: περιγραφή, τιμή, απόθεμα
+  product_stats[$product_id]="0 0"  # Μορφή: αριθμός αιτήσεων, αριθμός πωλήσεων
+  failed_orders[$product_id]=""
+  user_totals[$product_id]=0  # Αρχικοποίηση συνολικών εσόδων ανά προϊόν
+done
+
+# Συνάρτηση για την επεξεργασία παραγγελιών πελατών
+handle_order() {
+  local item_id=$1
+  local client_id=$2
+  local order_feedback="Order for Item_$item_id failed"
+  local order_cost=0
+
+  # Εξαγωγή πληροφοριών προϊόντος από τον κατάλογο
+  IFS=' ' read -r item_desc item_price item_stock <<< "${product_catalog[$item_id]}"
+
+  # Έλεγχος διαθεσιμότητας προϊόντος και επεξεργασία της παραγγελίας
+  if [[ $item_stock -gt 0 ]]; then
+    # Μείωση αποθέματος κατά 1
+    product_catalog[$item_id]="${item_desc} $item_price $(($item_stock - 1))"
+
+    # Ενημέρωση στατιστικών παραγγελιών
+    product_stats[$item_id]=$(($(echo ${product_stats[$item_id]} | cut -d' ' -f1) + 1))  # Αύξηση αιτήσεων
+    product_stats[$item_id]=$(($(echo ${product_stats[$item_id]} | cut -d' ' -f2) + 1))  # Αύξηση πωλήσεων
+    order_cost=$item_price
+    order_feedback="Client $client_id: Purchase complete, your total is: $order_cost$"
+  else
+    product_stats[$item_id]=$(($(echo ${product_stats[$item_id]} | cut -d' ' -f1) + 1))  # Αύξηση αιτήσεων
+    order_feedback="Client $client_id: products unavailable, request failed"
+    failed_orders[$item_id]="${failed_orders[$item_id]} Customer_$client_id failed for Item_$item_id. "
+  fi
+
+  # Αποστολή αποτελέσματος στον πελάτη
+  echo "$order_feedback" > "pipe_from_server_to_$client_id"
+  user_totals[$client_id]=$((${user_totals[$client_id]} + order_cost))
+}
+
+# Δημιουργία σωλήνων και fork διεργασιών πελατών
+for client_id in {1..5}; do  # Αλλαγή σε 5 πελάτες
+  mkfifo "pipe_to_server_from_$client_id"
+  mkfifo "pipe_from_server_to_$client_id"
+
+  # Fork μιας διεργασίας πελάτη
+  (
+    for order_index in {1..10}; do
+      # Τυχαία επιλογή προϊόντος από 0 έως TOTAL_PRODUCTS-1
+      item_id=$(($RANDOM % TOTAL_PRODUCTS))
+      echo $item_id > "pipe_to_server_from_$client_id"
+
+      # Αναμονή για το αποτέλεσμα της παραγγελίας από τον server
+      order_feedback=$(cat "pipe_from_server_to_$client_id")
+      echo "$order_feedback"
+      sleep 1  # Αναμονή 1 δευτερολέπτου μεταξύ παραγγελιών
+    done
+  ) &
+done
+
+# Κύρια διεργασία server
+for client_id in {1..5}; do  # Αλλαγή σε 5 πελάτες
+  for order_index in {1..10}; do
+    item_id=$(cat "pipe_to_server_from_$client_id")  # Ανάγνωση παραγγελίας από πελάτη
+    handle_order $item_id $client_id  # Επεξεργασία της παραγγελίας
+  done
+done
+
+# Αναμονή για την ολοκλήρωση όλων των διεργασιών πελατών
+wait
+
+# Δημιουργία αναφοράς
+echo "------------------------------------"
+echo "Summary Report"
+echo "------------------------------------"
+total_requests=0
+total_successful=0
+total_failed=0
+total_income=0
+
+# Βρόχος στον κατάλογο για τη δημιουργία της αναφοράς
+for product_id in {0..19}; do
+  IFS=' ' read -r item_desc item_price item_stock <<< "${product_catalog[$product_id]}"
+  requests=$(echo ${product_stats[$product_id]} | cut -d' ' -f1)
+  sales=$(echo ${product_stats[$product_id]} | cut -d' ' -f2)
+
+  total_requests=$((total_requests + requests))
+  total_successful=$((total_successful + sales))
+  total_failed=$((total_failed + (requests - sales)))
+  total_income=$((total_income + (sales * item_price)))
+
+  echo "Product: $item_desc"
+  echo "  Requests: $requests"
+  echo "  Sold: $sales"
+  echo "  Unfulfilled Requests: $(($requests - $sales))"
+  echo "  Customers who failed: ${failed_orders[$product_id]}"
+  echo "------------------------------------"
+done
+
+# Τελική σύνοψη
+echo "Total Orders: $total_requests"
+echo "Successful Orders: $total_successful"
+echo "Failed Orders: $total_failed"
+echo "Total Revenue: $total_income"
 
